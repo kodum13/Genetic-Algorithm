@@ -1,0 +1,307 @@
+from random import randint
+import random
+import pandas as pd
+import numpy as np
+import statistics as stat
+
+# Follows algorithm from the paper:
+# A simulation-based decision support system for a multi-echelon inventory problem with service level constraints
+# By Shing ChihTsai    Chung HungLiu
+
+###############################################################################
+# Initialize the algorithm with parameters, constraints, and thresholds
+def initialize():
+    # Initialize sets I and L
+    # Set number of parts as set I
+    num_parts = 10
+    I = range(1,num_parts+1)
+
+    # Set number of stores as set L
+    num_stores = 5
+    L = range(1,num_stores+1)
+
+    total = num_parts*num_stores
+    
+    # Create random list of unit cost for each part 
+    C = [] 
+    for j in range(total): 
+        C.append(randint(2, 30)) 
+
+    # Penalty cost
+    c_p = 100
+
+    # Response time from DC to each store in hours as set T
+    T = [.5, 2, 1, .75, 1.5]
+
+    # Threshold for wait times
+    Tl = [5,5,5,5,5]
+    Tup = [4.5,4.5,4.5,4.5,4.5]
+    Tlow = [5.5,5.5,5.5,5.5,5.5]
+    # Set E as the difference in tolerance
+    tol_e = [.5,.5,.5,.5,.5]
+
+    # Set the upper limits for stocking quantity at each store and DC
+    Sil_upper_list = [[3,4,5,4,3,2,6,4,2,3],
+             [3,4,5,4,3,2,6,4,2,3],
+             [3,4,5,4,3,2,6,4,2,3],
+             [3,4,5,4,3,2,6,4,2,3],
+             [3,4,5,4,3,2,6,4,2,3]]
+    Sil_upper = pd.DataFrame(Sil_upper_list, columns = ['1','2','3','4','5','6','7','8','9','10']) 
+
+    Si0_upper = [[6,8,10,8,6,4,12,8,4,6]]
+    
+    # Failure rates of parts at each store (demand) per hour
+    # Demand = .02 = 1 part sold every 50 hours
+    # Low, medium, and high demand represented
+    #lambda_demand = [.02, .04, .06, .04, .02, .05, .08, .04, .01, .02]
+    lambda_demand = [.08, .16, .24, .16, .08, .15, .32, .16, .04, .08]
+    #lambda_demand = [.16, .32, .48, .32, .16, .3, .64, .32, .08, .16]
+
+    return I, L, C, c_p, T, Tl, Tup, Tlow, tol_e, Sil_upper, Si0_upper, lambda_demand
+
+
+###############################################################################
+
+# Sets stocking level for each part at all stores
+# Takes random integer between 0 and the upper limit inclusive
+def stock_store(num_stores, num_parts, Sil_upper):
+    stock_level = pd.DataFrame(np.nan, index=[1,2,3,4,5], 
+                           columns=['1','2','3','4','5','6','7','8','9','10'])
+    for i in range(num_stores):
+        for j in range(num_parts):
+            stock_level.iloc[i,j] = randint(0,Sil_upper.iloc[i,j])
+    return stock_level
+
+# Expected demand each day
+# Takes the mean lambda (parts sold per hour) * time t
+def exp_demand(lam_dem, t, num_stores, num_parts):
+    exp_dem = pd.DataFrame(np.nan, index=[1,2,3,4,5], 
+                           columns=['1','2','3','4','5','6','7','8','9','10'])
+    for i in range(num_stores):
+        for j in range(num_parts):
+            exp_dem.iloc[i,j] = lam_dem[j]*t
+    return exp_dem
+
+# Demand per day
+# Based on rate means and t hour day, t=10
+# Set t=1 for one hour
+def demand_day(lam_dem, t, num_stores, num_parts):
+    sample_demand = pd.DataFrame(np.nan, index=[1,2,3,4,5], 
+                           columns=['1','2','3','4','5','6','7','8','9','10'])
+    for i in range(num_stores):
+        for j in range(num_parts):
+            sample_demand.iloc[i,j] = sum(np.random.poisson(lam_dem[j],t))
+    return sample_demand
+
+
+# Finds the actual wait given a stocking level set and back order matrix
+def wait_time_calc(dem, stock, num_stores, num_parts, T):
+    over = stock - dem
+    wait_time = []
+    
+    for i in range(num_stores):
+        wait = 0
+        for j in range(num_parts):
+            if over.iloc[i,j] < 0:
+                wait += T[i]*abs(over.iloc[i,j])
+        wait_time.append(wait)
+    return wait_time
+
+
+###############################################################################
+
+# Find average wait time and number of failures for each S solution
+
+def wait_per_S(S, num_stores, num_parts, lambda_demand, T):
+    Wait_times = pd.DataFrame(np.nan, index=[1,2,3,4,5,6,7,8,9,10], 
+                           columns=['1','2','3','4','5'])
+    row_sum = pd.DataFrame(np.nan, index=[1,2,3,4,5,6,7,8,9,10], 
+                           columns=['1','2','3','4','5'])
+    for n in range(10):
+        # Get sales for one day (one simulation realization)
+        dem = demand_day(lambda_demand, 10, num_stores, num_parts)
+        # Sum the sales per store (each store get total # sales)
+        dem_sum = dem.sum(axis=1)
+        # Calculate the wait time for the demand realization
+        wait = wait_time_calc(dem, S, num_stores, num_parts, T)
+        # Store demand realization in Q list 
+        for j in range(num_stores):
+            row_sum.iloc[n,j] = dem_sum.iloc[j]
+            Wait_times.iloc[n,j] = wait[j]          
+       
+    return row_sum, Wait_times
+        
+
+# Calculate X l(n), sample average estimator of E[Wl(S)] for each store
+
+def sample_avg_est(S, num_stores, num_parts, lambda_demand, T):
+    D, W = wait_per_S(S, num_stores, num_parts, lambda_demand, T)
+    x = pd.DataFrame(np.nan, index=[1,2,3,4,5,6,7,8,9,10], 
+                           columns=['1','2','3','4','5'])
+    for i in range(10):
+        for j in range(num_stores):
+            if D.iloc[i,j] != 0:
+                x.iloc[i,j] = W.iloc[i,j]/D.iloc[i,j]
+            else:
+                x.iloc[i,j]  = 0
+    return x
+
+
+# Calculate the sample variance for a realiztion of the simulation
+def sample_variance(x, num_stores):
+    var = []
+    for i in range(num_stores):
+        var.append(round(stat.variance(x.iloc[:,i]),2))
+    return var
+
+#### Run Feasibility Check Procedure FCP
+def fcp(S, T, tol_e, num_stores, num_parts, lambda_demand, k):
+    F = []
+    L = []
+    no = 10 
+    alpha = .05
+    v = 5
+    r = 10
+    M = range(k)
+    n = 1/(2*(2*alpha/k*v)**(-2/(no-1))-1)
+
+    for s in range(len(M)):
+        x = sample_avg_est(S[s], num_stores, num_parts, lambda_demand, T)
+        var = sample_variance(x, num_stores)
+        left, right = [], []
+        left_sum, right_num = 0, 0
+        flag = 'N'
+        for j in range(num_stores):
+            for i in range(num_parts):        
+                left_sum = left_sum + (x.iloc[i,j]-T[j])
+                left.append(left_sum)
+                right_num = n*(no-1)*var[j]*no/tol_e[j]-(tol_e[j]/2)*r
+                right.append(right_num)
+            if left_sum >= right_num:
+                flag = 'Y'
+            
+        if flag == 'Y':
+            L.append(s)
+        else:
+            F.append(s)
+    return F, L, x, var
+            
+# Fitness calculation based on the objective function of minimizing
+# the sum of inventory cost and penalty cost for violating customer waiting thresholds
+def fitness_calc(S,w1,w2, c_p, C, T, num_stores, num_parts, lambda_demand):
+    cost_matrix = C*S
+    sum_store = cost_matrix.sum(axis=1)
+    total_sum = sum_store.sum()
+    samp_avg = sample_avg_est(S, num_stores, num_parts, lambda_demand, T).mean(axis=0)
+    over = samp_avg - T
+    for j in range(len(over)):
+        if over.iloc[j] < 0:
+            over.iloc[j] = 0
+    penalty = c_p * over.sum()
+    return round(w1*total_sum + w2*penalty,2)
+    
+
+# Linear ranking scheme to sort solutions based on fitness
+def linear_ranking(S,w1,w2, c_p, C, T, num_stores, num_parts, lambda_demand):
+    fitness = []
+    w1, w2 = .5, .5
+    for s in range(len(S)):
+        obj = fitness_calc(S[s],w1, w2, c_p, C, T, num_stores, num_parts, lambda_demand)
+        fitness.append(obj)
+    rank = dict(zip(range(len(S)), fitness))
+    sort_rank = sorted(rank.items(), key=lambda x: x[1])
+    return sort_rank
+
+
+# Assign selection probabilities to each solution based on it's rank from fitness
+def selection_probability(r, sort_rank):
+    rank = sort_rank
+    p = []
+    N = len(rank)+1
+    n_minus = 2/(r + 1)
+    n_star = 2*r/(r + 1)
+    mult = 1
+    if N > 30:
+        mult = 100
+    for i in range(1,N+1):
+        prob = (mult/N)*(n_minus + (n_star - n_minus))*((i-1)/(N-1))
+        p.append(round(prob,8))
+    return rank, p
+
+# Select a subset of solutions to be used as parents
+def select_n_solutions(n, rank, p):
+    final = []
+    for i in range(n):
+        unif = np.random.uniform(0,1)
+        for j in range(len(p)-1):
+            if unif <= p[j+1] and unif >= p[j]:
+                final.append(rank[j])
+                break
+            elif j==len(p)-2 and unif > p[-1]:
+                final.append(rank[j])
+                break
+            else:
+                pass
+    return final
+
+
+ # Pairs the parents in terms of fittest or randomly depending on method 
+def pairing(n, subset, method='Fittest'):
+    pair = []
+    if method == 'Fittest':
+        sort_subset = sorted(subset)
+        for i in range(0,n-2,2):
+            pair.append(sort_subset[i][0])
+            pair.append(sort_subset[i+1][0])
+    else: #random
+        for i in range(0,n-2,2):
+            pair.append(subset[i][0])
+            pair.append(subset[i+1][0])
+    return pair
+
+
+# Mates the parent pairs to produce offspring solutions
+def mating(parent_1, parent_2, num_stores, num_parts, method='Single'):
+    gene_len = num_stores*num_parts
+    offspring = []
+    if method == 'Single':
+        pivot_point = randint(1, gene_len)
+        offspring_1 = np.concatenate([parent_1[0:pivot_point],parent_2[pivot_point:]])
+        offspring_2 = np.concatenate([parent_2[0:pivot_point],parent_1[pivot_point:]])
+        offspring= [offspring_1, offspring_2]
+    else: # Double pivot
+        pivot_one = randint(1,gene_len-1)
+        pivot_two = randint(1,gene_len)
+        offspring_1 = np.concatenate([parent_1[0:pivot_one],parent_2[pivot_one:]])
+        offspring_2 = np.concatenate([parent_2[0:pivot_one],parent_1[pivot_one:]])
+        offspring_3 = np.concatenate([parent_1[0:pivot_two],parent_2[pivot_two:]])
+        offspring_4 = np.concatenate([parent_2[0:pivot_two],parent_1[pivot_two:]])
+        offspring = [offspring_1, offspring_2, offspring_3, offspring_4]
+    return offspring
+    
+# Mutates elements of the offspring using a Guassian distribution     
+def mutation(gene, p, Sil_upper, method="Gauss"):
+    standard_deviation = 1
+    num_genes = len(gene)
+    num_mutate = int(num_genes*p)
+    S_up = Sil_upper.to_numpy().flatten()
+    mut = []
+    orig_gene = []
+    for i in range(num_mutate):
+        mut.append(randint(0,num_genes-1))
+    if method!='Gauss':
+        for j in range(num_genes):
+            if j in mut:
+                rand = randint(0,S_up[j])
+                orig_gene.append(rand)
+            else:
+                orig_gene.append(gene[j])
+    else:
+        for j in range(num_genes):
+            if j in mut:
+                rand = min(max(0,round(gene[j] + random.gauss(0, standard_deviation), 0)),S_up[j])
+                orig_gene.append(rand)
+            else:
+                orig_gene.append(gene[j])
+        
+    return orig_gene
