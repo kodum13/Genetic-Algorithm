@@ -1,0 +1,179 @@
+from RunGA import ReadSolutionSpace as sol
+from RunGA import python_project as pp
+import numpy as np
+import pandas as pd
+from statistics import mean 
+import matplotlib.pyplot as plt
+
+def main():
+    # Set number of parts and stores
+    num_parts = 10
+    num_stores = 5
+    
+    # Initialize the problem with the starting constraints, costs, average demand, and drive times
+    I, L, Cost_matrix, Penalty_cost, Drive_time, Tl, Constraint_lower, Constraint_upper, tol_e, Sil_upper, Si0_upper, lambda_demand = pp.initialize()
+    
+    # Cost matrix- per unit cost for each part at each store
+    C = np.reshape(Cost_matrix, (5,10))
+    print("Cost Matrix ($): \n", C)
+    
+    # Drive time from DC to stores
+    print("Drive time in hours ", Drive_time)
+    
+    # Thresholds for cumulative wait time allowed at each store
+    print("Wait time in hours: \n", Tl)
+    print("Upper bound on threshold: \n", Constraint_upper)
+    print("Lower bound on threshold: \n", Constraint_lower)
+    print("Tolerance level for each store: \n", tol_e)
+    
+    # Maximum number of stocking level for each store
+    print("Upper bound on stocking level: \n", Sil_upper)
+    print("Upper bound at DC: \n", Si0_upper)
+    
+    # Parameter for demand of parts according to hourly rate
+    # Example: .02 = 1 part sold every 50 hours
+    print("Sales count poisson parameters: \n", lambda_demand)
+    
+    # Expected demand given the current parameter setting for the exponential failure rate of parts needing replacement
+    exp = pp.exp_demand(lambda_demand, 10, num_stores, num_parts)
+    print("Expected sales in a 10 hour day: \n", exp)
+    
+    ###################################################################################################################################################
+    # Set Initial Population
+    # Read in the solution space from Excel sheet
+    # Shows the stocking level for each part at each store
+    S = sol.solution_space()
+    print("First solution: \n", S[0])
+    
+    # Feasibility Check Procedure
+    # checks S solutions for constraint violations
+    F_before, L_before, x, var = pp.fcp(S, Drive_time, tol_e, num_stores, num_parts, lambda_demand, k=100)
+    
+    # Fitness calculation based on Problem 2
+    # Gets average fitness for the current population
+    w1 = .75 
+    w2 = .25
+    Cost = np.reshape(Cost_matrix, (5,10))
+    fitness = []
+    fit_mean = []
+    for s in range(len(S)):
+        fit = pp.fitness_calc(S[s],w1,w2, Penalty_cost, Cost, Drive_time, num_stores, num_parts, lambda_demand)
+        fitness.append(fit)
+    fit_mean.append(mean(fitness))
+    
+    # Linear Ranking Scheme
+    sort_rank = pp.linear_ranking(S,w1,w2, Penalty_cost, Cost, Drive_time, num_stores, num_parts, lambda_demand)
+    sort_rank_rev = sort_rank[::-1]
+    
+    # Selection probability
+    r = 5
+    rank, p = pp.selection_probability(r, sort_rank_rev)
+    
+    # Select subset for parent population
+    n = 10
+    subset_n = pp.select_n_solutions(n, rank, p)
+    
+    # Pair the parents
+    pairs = pp.pairing(n, subset_n, method='Fittest')
+    
+    # Create offspring from the parents
+    offspring = []
+    mut_p = .5
+    mut_list = []
+    for i in range(0,len(pairs),2):
+        parent_1 = S[pairs[i]]
+        parent_2 = S[pairs[i+1]]
+        mate = pp.mating(parent_1.to_numpy().flatten(), parent_2.to_numpy().flatten(), num_stores, num_parts, 'Double')
+        offspring.append(mate)
+        for j in range(4):
+            mutate = np.reshape(pp.mutation(mate[j], mut_p, Sil_upper, method="Gauss"),(5,10))
+            mut_df = pd.DataFrame(data=mutate)
+            mut_list.append(mut_df)
+    
+    ##########################################################################################################################
+    # After initializing the constraints and parameters, the inital population is used as input for the loop
+    # The process iterates 10 times so for each iteration the population is ranked, assigned probabilities, a subset is selected,
+    # parents are paired, offspring are created by mating the parent pairs and mutating portions of the offspring, and finally
+    # the fitness calculation is recorded
+    
+    # Main Genetic Algorithm loop
+    elite = []
+    elite_fit = []
+    for t in range(10):
+        # Starts with initial population from inital or last run
+        S = mut_list
+        # Liner ranking scheme to sort the solutions
+        sort_rank = pp.linear_ranking(S,w1,w2, Penalty_cost, Cost, Drive_time, num_stores, num_parts, lambda_demand)
+        sort_rank_rev = sort_rank[::-1]
+    
+        # Selection probability
+        r = 2
+        rank, p = pp.selection_probability(r, sort_rank_rev)
+        
+        # Select subset for parent population
+        n = 10
+        subset_n = pp.select_n_solutions(n, rank, p)
+    
+        # Pair the parents
+        pairs = pp.pairing(n, subset_n, method='Fittest')
+    
+        # Create offspring from the parents
+        offspring = []
+        mut_p = .5
+        mut_list = []
+        elite.append(S[pairs[0]])
+        elite.append(S[pairs[1]])
+        elite_fit.append(pp.fitness_calc(S[pairs[0]],w1,w2, Penalty_cost, Cost, Drive_time, num_stores, num_parts, lambda_demand))
+        for i in range(0,len(pairs),2):
+            parent_1 = S[pairs[i]]
+            parent_2 = S[pairs[i+1]]
+            # Parents are input to the mating function to create 4 offspring using 2 randomly selected pivot points
+            mate = pp.mating(parent_1.to_numpy().flatten(), parent_2.to_numpy().flatten(), num_stores, num_parts, 'Double')
+            offspring.append(mate)
+            # Offspring are mutated according to mutation rate mut_p and constrained by upper bound Sil_upper
+            for j in range(4):
+                mutate = np.reshape(pp.mutation(mate[j], mut_p, Sil_upper, method="Gauss"),(5,10))
+                mut_df = pd.DataFrame(data=mutate)
+                mut_list.append(mut_df)
+    
+        # Fitness calculation based on Problem 2
+        # Gets average fitness 
+        w1 = .75 
+        w2 = .25
+        Cost = np.reshape(Cost_matrix, (5,10))
+        fitness = []
+        for s in range(len(S)):
+            # Fitness calculation according to total inventory cost and penalty term
+            fit = pp.fitness_calc(S[s],w1,w2, Penalty_cost, Cost, Drive_time, num_stores, num_parts, lambda_demand)
+            fitness.append(fit)
+        fit_mean.append(mean(fitness))
+        print(fitness)
+       
+    # Plot of generation on X-axis and fitness on Y-axis
+    colors = ['b', 'r']
+    
+    x = range(0,11)
+    y = fit_mean
+    rand = plt.scatter(x, y, c=colors[0])
+    
+    x = range(0,10)
+    y = elite_fit
+    el = plt.scatter(x, y, c=colors[1])
+    plt.title("Improvement of Inventory Cost over Iterations")
+    plt.title("Medium Demand & Mutation p=.5 with W1=.75 and W2=.25")
+    plt.xlabel("Generation")
+    plt.ylabel("Fitness")
+    plt.legend((rand, el),("Mutations","Elite"),loc="upper right")
+    plt.show()
+    
+    # Final check of constraint violations in the last generation's population
+    S = mut_list
+    F_after, L_after, x, var = pp.fcp(S, Drive_time, tol_e, num_stores, num_parts, lambda_demand, k=16)
+    print("Feasible solutions: ", F_after)
+    print("Not feasible: ", L_after)
+    
+    # Show the elite fitness
+    print("Elite results :", elite_fit)
+
+if __name__ == "__main__":
+    main()
